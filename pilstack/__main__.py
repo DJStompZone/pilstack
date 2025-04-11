@@ -19,13 +19,17 @@ def parse_args():
                         help='Remove all but the last occurrence of duplicated regions (default: True)')
     parser.add_argument('--keep-duplicates', dest='remove_duplicates', action='store_false',
                         help='Keep all duplicated regions.')
+    parser.add_argument('--top', type=int, default=0, help='Remove N pixels from top of images.')
+    parser.add_argument('--bottom', type=int, default=0, help='Remove N pixels from bottom of images.')
+    parser.add_argument('--left', type=int, default=0, help='Remove N pixels from left of images.')
+    parser.add_argument('--right', type=int, default=0, help='Remove N pixels from right of images.')
     return parser.parse_args()
 
 async def open_image_async(file):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, Image.open, file)
 
-async def open_images(glob_patterns):
+async def open_images(glob_patterns, crop_args):
     files = []
     for pattern in glob_patterns:
         files.extend(glob.glob(pattern))
@@ -37,7 +41,10 @@ async def open_images(glob_patterns):
     for file in tqdm_asyncio(files, desc="Opening images"):
         try:
             img = await open_image_async(file)
-            images.append((file, img.convert('RGBA')))
+            img = img.convert('RGBA')
+            width, height = img.size
+            img = img.crop((crop_args['left'], crop_args['top'], width - crop_args['right'], height - crop_args['bottom']))
+            images.append((file, img))
         except Exception as e:
             logging.warning(f"Could not open {file}: {e}")
 
@@ -64,44 +71,7 @@ def find_overlap(im1, im2, orientation):
 
     return 0
 
-
-def identify_repeated_regions(images, orientation):
-    repeated_regions = set()
-    min_size = min(img.size[1 if orientation == 'vertical' else 0] for _, img in images)
-    threshold_size = min_size // 2
-
-    region_counts = {}
-
-    for _, img in images:
-        arr = np.array(img)
-        key = arr[:, :threshold_size].tobytes() if orientation == 'vertical' else arr[:threshold_size, :].tobytes()
-        region_counts[key] = region_counts.get(key, 0) + 1
-
-    for region, count in region_counts.items():
-        if count >= len(images) - 1:
-            repeated_regions.add(region)
-
-    return repeated_regions
-
-
-def remove_duplicate_regions(images, orientation):
-    repeated_regions = identify_repeated_regions(images, orientation)
-    unique_images = []
-
-    seen_regions = set()
-    for file, img in reversed(images):
-        arr = np.array(img)
-        region = arr.tobytes()
-        if region not in seen_regions or region not in repeated_regions:
-            unique_images.insert(0, (file, img))
-            seen_regions.add(region)
-
-    return unique_images
-
-async def concat_images(images, orientation, remove_duplicates):
-    if remove_duplicates:
-        images = remove_duplicate_regions(images, orientation)
-
+async def concat_images(images, orientation):
     img_queue = deque(images)
     base_name, base_img = img_queue.popleft()
     positions = [(base_name, (0, 0))]
@@ -141,9 +111,11 @@ async def concat_images(images, orientation, remove_duplicates):
 
 async def main():
     args = parse_args()
-    images = await open_images(args.glob_pattern)
+    crop_args = {'top': args.top, 'bottom': args.bottom, 'left': args.left, 'right': args.right}
 
-    result_img, positions = await concat_images(images, args.orientation, args.remove_duplicates)
+    images = await open_images(args.glob_pattern, crop_args)
+
+    result_img, positions = await concat_images(images, args.orientation)
 
     logging.info("Concatenation successful. Image positions:")
     for name, pos in positions:
