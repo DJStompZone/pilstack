@@ -65,17 +65,36 @@ def find_overlap(im1, im2, orientation):
     return 0
 
 
+def identify_repeated_regions(images, orientation):
+    repeated_regions = set()
+    min_size = min(img.size[1 if orientation == 'vertical' else 0] for _, img in images)
+    threshold_size = min_size // 2
+
+    region_counts = {}
+
+    for _, img in images:
+        arr = np.array(img)
+        key = arr[:, :threshold_size].tobytes() if orientation == 'vertical' else arr[:threshold_size, :].tobytes()
+        region_counts[key] = region_counts.get(key, 0) + 1
+
+    for region, count in region_counts.items():
+        if count >= len(images) - 1:
+            repeated_regions.add(region)
+
+    return repeated_regions
+
+
 def remove_duplicate_regions(images, orientation):
+    repeated_regions = identify_repeated_regions(images, orientation)
     unique_images = []
+
     seen_regions = set()
-
     for file, img in reversed(images):
-        img_array = np.array(img)
-        region_hash = img_array.tobytes()
-
-        if region_hash not in seen_regions:
+        arr = np.array(img)
+        region = arr.tobytes()
+        if region not in seen_regions or region not in repeated_regions:
             unique_images.insert(0, (file, img))
-            seen_regions.add(region_hash)
+            seen_regions.add(region)
 
     return unique_images
 
