@@ -4,27 +4,40 @@ from PIL import Image
 from collections import deque
 import numpy as np
 import logging
+from tqdm.asyncio import tqdm_asyncio
+import asyncio
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Concatenate images based on overlapping pixels.')
-    parser.add_argument('glob_pattern', type=str, help='Glob pattern to match image files.')
+    parser.add_argument('glob_pattern', type=str, nargs='+', help='Glob pattern(s) to match image files.')
     parser.add_argument('-o', '--orientation', choices=['vertical', 'horizontal'], default='vertical',
                         help='Orientation to concatenate images (default: vertical).')
+    parser.add_argument('-r', '--result', default='./pilstack.png', help='Output file path (default: ./pilstack.png)')
+    parser.add_argument('--remove-duplicates', action='store_true', default=True,
+                        help='Remove all but the last occurrence of duplicated regions (default: True)')
+    parser.add_argument('--keep-duplicates', dest='remove_duplicates', action='store_false',
+                        help='Keep all duplicated regions.')
     return parser.parse_args()
 
+async def open_image_async(file):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, Image.open, file)
 
-def open_images(glob_pattern):
-    files = glob.glob(glob_pattern)
+async def open_images(glob_patterns):
+    files = []
+    for pattern in glob_patterns:
+        files.extend(glob.glob(pattern))
+
     if len(files) < 2:
         raise ValueError("At least two input files are required.")
 
     images = []
-    for file in files:
+    for file in tqdm_asyncio(files, desc="Opening images"):
         try:
-            img = Image.open(file).convert('RGBA')
-            images.append((file, img))
+            img = await open_image_async(file)
+            images.append((file, img.convert('RGBA')))
         except Exception as e:
             logging.warning(f"Could not open {file}: {e}")
 
@@ -52,10 +65,29 @@ def find_overlap(im1, im2, orientation):
     return 0
 
 
-def concat_images(images, orientation):
+def remove_duplicate_regions(images, orientation):
+    unique_images = []
+    seen_regions = set()
+
+    for file, img in reversed(images):
+        img_array = np.array(img)
+        region_hash = img_array.tobytes()
+
+        if region_hash not in seen_regions:
+            unique_images.insert(0, (file, img))
+            seen_regions.add(region_hash)
+
+    return unique_images
+
+async def concat_images(images, orientation, remove_duplicates):
+    if remove_duplicates:
+        images = remove_duplicate_regions(images, orientation)
+
     img_queue = deque(images)
     base_name, base_img = img_queue.popleft()
     positions = [(base_name, (0, 0))]
+
+    progress_bar = tqdm_asyncio(total=len(images)-1, desc="Concatenating images")
 
     while img_queue:
         matched = False
@@ -78,27 +110,29 @@ def concat_images(images, orientation):
                 base_img = new_img
                 img_queue.remove((name, next_img))
                 matched = True
+                progress_bar.update(1)
                 break
 
         if not matched:
+            progress_bar.close()
             raise ValueError("Could not find sufficient overlap between remaining images.")
 
+    progress_bar.close()
     return base_img, positions
 
-
-def main():
+async def main():
     args = parse_args()
-    images = open_images(args.glob_pattern)
+    images = await open_images(args.glob_pattern)
 
-    result_img, positions = concat_images(images, args.orientation)
+    result_img, positions = await concat_images(images, args.orientation, args.remove_duplicates)
 
     logging.info("Concatenation successful. Image positions:")
     for name, pos in positions:
         logging.info(f"{name}: {pos}")
 
-    result_img.save('concatenated_image.png')
-    logging.info("Saved concatenated_image.png")
+    result_img.save(args.result)
+    logging.info(f"Saved {args.result}")
 
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

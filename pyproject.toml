@@ -1,6 +1,6 @@
 [project]
 name = "pilstack"
-version = "0.1.0"
+version = "0.1.4"
 description = ""
 authors = [
     {name = "DJ Stomp",email = "85457381+DJStompZone@users.noreply.github.com"}
